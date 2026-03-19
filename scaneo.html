@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestor de PDFs Pro</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        body { font-family: sans-serif; background: #f4f4f9; padding: 20px; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .hidden { display: none; }
+        input, select, button { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; }
+        button { background: #3b82f6; color: white; border: none; cursor: pointer; }
+        .doc-card { border-bottom: 1px solid #eee; padding: 10px; display: flex; justify-content: space-between; align-items: center; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>📂 Mi Gestor de Documentos</h2>
+
+    <div id="auth-section">
+        <input type="email" id="email" placeholder="Correo electrónico">
+        <input type="password" id="password" placeholder="Contraseña">
+        <button onclick="signUp()">Registrarse</button>
+        <button onclick="signIn()">Iniciar Sesión</button>
+    </div>
+
+    <div id="app-section" class="hidden">
+        <button onclick="signOut()" style="background: #ef4444;">Cerrar Sesión</button>
+        <hr>
+        
+        <h3>Subir Nuevo PDF</h3>
+        <input type="text" id="pdf-name" placeholder="Nombre personalizado del PDF">
+        <select id="pdf-category">
+            <option value="Factura">Factura</option>
+            <option value="Contrato">Contrato</option>
+            <option value="Identificacion">Identificación</option>
+        </select>
+        <input type="file" id="pdf-file" accept="application/pdf">
+        <button onclick="uploadFile()">Subir y Guardar</button>
+
+        <hr>
+
+        <h3>Buscador</h3>
+        <input type="text" id="search-input" placeholder="Buscar por nombre..." oninput="fetchDocs()">
+        <select id="filter-category" onchange="fetchDocs()">
+            <option value="">Todas las categorías</option>
+            <option value="Factura">Factura</option>
+            <option value="Contrato">Contrato</option>
+            <option value="Identificacion">Identificación</option>
+        </select>
+
+        <div id="document-list"></div>
+    </div>
+</div>
+
+<script>
+    // CONFIGURACIÓN (Reemplaza con tus datos de Supabase)
+    const SUPABASE_URL = 'https://hmncwayrtpucrgfwavan.supabase.co';
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhtbmN3YXlydHB1Y3JnZndhdmFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM5NTEyNjEsImV4cCI6MjA4OTUyNzI2MX0.atWCdcH-eRKcsbX6PUSX1z7ybR9nvdd07bVpMyfMg8c';
+    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    let currentUser = null;
+
+    // --- AUTENTICACIÓN ---
+    async function signUp() {
+        const email = document.getElementById('email').value;
+        const password = document.getElementById('password').value;
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        if (error) alert(error.message); else alert("Revisa tu correo para confirmar");
+    }
+
+    async function signIn() {
+        const email = document.getElementById('email').value;
+        const password = document.getElementById('password').value;
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) alert(error.message); else setupApp(data.user);
+    }
+
+    function setupApp(user) {
+        currentUser = user;
+        document.getElementById('auth-section').classList.add('hidden');
+        document.getElementById('app-section').classList.remove('hidden');
+        fetchDocs();
+    }
+
+    async function signOut() {
+        await supabase.auth.signOut();
+        location.reload();
+    }
+
+    // --- LÓGICA DE ARCHIVOS ---
+    async function uploadFile() {
+        const file = document.getElementById('pdf-file').files[0];
+        const name = document.getElementById('pdf-name').value;
+        const category = document.getElementById('pdf-category').value;
+
+        if (!file || !name) return alert("Llena todos los campos");
+
+        // 1. Subir PDF al Storage
+        const fileName = `${Date.now()}_${file.name}`;
+        const { data: uploadData, error: uploadError } = await supabase.storage
+            .from('pdfs')
+            .upload(fileName, file);
+
+        if (uploadError) return alert(uploadError.message);
+
+        // 2. Guardar metadatos en la tabla
+        const { error: dbError } = await supabase.from('documentos').insert([{
+            nombre_pdf: name,
+            categoria: category,
+            url_archivo: fileName,
+            user_id: currentUser.id
+        }]);
+
+        if (dbError) alert(dbError.message);
+        else { alert("¡Guardado!"); fetchDocs(); }
+    }
+
+    async function fetchDocs() {
+        const searchTerm = document.getElementById('search-input').value;
+        const categoryFilter = document.getElementById('filter-category').value;
+
+        let query = supabase.from('documentos').select('*').eq('user_id', currentUser.id);
+
+        if (searchTerm) query = query.ilike('nombre_pdf', `%${searchTerm}%`);
+        if (categoryFilter) query = query.eq('categoria', categoryFilter);
+
+        const { data, error } = await query;
+        
+        const listContainer = document.getElementById('document-list');
+        listContainer.innerHTML = '';
+        data.forEach(doc => {
+            const { data: urlData } = supabase.storage.from('pdfs').getPublicUrl(doc.url_archivo);
+            listContainer.innerHTML += `
+                <div class="doc-card">
+                    <div>
+                        <strong>${doc.nombre_pdf}</strong> <br>
+                        <small>${doc.categoria}</small>
+                    </div>
+                    <a href="${urlData.publicUrl}" target="_blank">👁️ Ver PDF</a>
+                </div>
+            `;
+        });
+    }
+</script>
+</body>
+</html>
